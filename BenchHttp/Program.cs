@@ -7,6 +7,9 @@ using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Jobs;
 using BenchmarkDotNet.Running;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Http;
+using Microsoft.Net.Http.Headers;
 //using BenchmarkDotNet.Diagnostics.Windows.Configs;
 
 namespace BenchHttp
@@ -34,12 +37,24 @@ namespace BenchHttp
                 AddJob(Job.MediumRun.WithGcServer(false).WithGcForce(false).WithId("WorkstationForce"));
             }
         }
+
         private HttpClient _httpClient;
+        private IHttpClientFactory _httpClientFactory;
 
         [GlobalSetup]
         public void Setup()
         {
             _httpClient = new HttpClient();
+
+            var serviceProvider = new ServiceCollection().AddHttpClient("json")
+              .Services.Configure<HttpClientFactoryOptions>("json", options =>
+               options.HttpMessageHandlerBuilderActions.Add(builder =>
+             builder.PrimaryHandler = new HttpClientHandler
+             {
+                 ServerCertificateCustomValidationCallback = (m, crt, chn, e) => true
+             })).BuildServiceProvider();
+
+            _httpClientFactory = serviceProvider.GetService<IHttpClientFactory>();
         }
 
         [GlobalCleanup]
@@ -114,6 +129,35 @@ namespace BenchHttp
             using var stream = await _httpClient.GetStreamAsync("http://openlibrary.org/search.json?q=tdd");
 
             var data = await JsonSerializer.DeserializeAsync<Search>(stream);
+        }
+
+        [Benchmark]
+        public async Task HttpFactory()
+        {
+
+            var httpRequestMessage = new HttpRequestMessage(
+                    HttpMethod.Get,
+                    "http://openlibrary.org/search.json?q=tdd")
+            {
+                Headers =
+                    {
+                        { HeaderNames.Accept, "application/json" },
+                        { HeaderNames.UserAgent, "HttpRequestsSample" }
+                    }
+            };
+
+            var httpClient = _httpClientFactory.CreateClient();
+            using var httpResponseMessage = await httpClient.SendAsync(httpRequestMessage, HttpCompletionOption.ResponseHeadersRead);
+
+            if (httpResponseMessage.IsSuccessStatusCode)
+            {
+                using var contentStream =
+                    await httpResponseMessage.Content.ReadAsStreamAsync();
+
+
+                var data = await JsonSerializer.DeserializeAsync<Search>(contentStream);
+            }
+
         }
     }
 }
